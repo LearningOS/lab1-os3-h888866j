@@ -22,6 +22,7 @@ pub use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+use crate::timer::get_time_us;
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -54,6 +55,8 @@ lazy_static! {
         let mut tasks = [TaskControlBlock {
             task_cx: TaskContext::zero_init(),
             task_status: TaskStatus::UnInit,
+            first_start_time:0,
+            syscall_accounting: [0; MAX_SYSCALL_NUM]
         }; MAX_APP_NUM];
         for (i, t) in tasks.iter_mut().enumerate().take(num_app) {
             t.task_cx = TaskContext::goto_restore(init_app_cx(i));
@@ -80,6 +83,7 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let task0 = &mut inner.tasks[0];
         task0.task_status = TaskStatus::Running;
+        task0.first_start_time = get_time_us();
         let next_task_cx_ptr = &task0.task_cx as *const TaskContext;
         drop(inner);
         let mut _unused = TaskContext::zero_init();
@@ -122,6 +126,9 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].first_start_time == 0 {
+                inner.tasks[next].first_start_time = get_time_us();
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -137,6 +144,30 @@ impl TaskManager {
     }
 
     // LAB1: Try to implement your function to update or get task info!
+    fn get_current_task_first_start_time(&self) -> usize{
+        let mut inner = self.inner.exclusive_access();
+        let current_task_id = inner.current_task;
+        inner.tasks[current_task_id].first_start_time
+    }
+
+    fn get_current_task_syscall_accounting(&self) -> [u32;MAX_SYSCALL_NUM]{
+        let mut inner = self.inner.exclusive_access();
+        let current_task_id = inner.current_task;
+        inner.tasks[current_task_id].syscall_accounting
+    }
+
+    fn update_current_task_syscall_accounting(&self, syscall_id:usize){
+        let mut inner = self.inner.exclusive_access();
+        let current_task_id = inner.current_task;
+        inner.tasks[current_task_id].syscall_accounting[syscall_id] += 1;
+
+    }
+    fn get_current_task_status(&self) -> TaskStatus{
+        let mut inner = self.inner.exclusive_access();
+        let current_task_id = inner.current_task;
+        inner.tasks[current_task_id].task_status
+        // TaskStatus::Running
+    }
 }
 
 /// Run the first task in task list.
@@ -174,3 +205,15 @@ pub fn exit_current_and_run_next() {
 
 // LAB1: Public functions implemented here provide interfaces.
 // You may use TASK_MANAGER member functions to handle requests.
+pub fn get_time_elapsed() -> usize{
+    (get_time_us() - TASK_MANAGER.get_current_task_first_start_time())/1000
+}
+pub fn record_current_syscall(id: usize){
+    TASK_MANAGER.update_current_task_syscall_accounting(id)
+}
+pub fn get_current_task_syscall_accounting() -> [u32;MAX_SYSCALL_NUM]{
+    TASK_MANAGER.get_current_task_syscall_accounting()
+}
+pub fn get_current_task_status() -> TaskStatus{
+    TASK_MANAGER.get_current_task_status()
+}
