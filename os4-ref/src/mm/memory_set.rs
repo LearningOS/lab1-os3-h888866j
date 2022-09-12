@@ -47,6 +47,13 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
+    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
+        map_area.map(&mut self.page_table);
+        if let Some(data) = data {
+            map_area.copy_data(&mut self.page_table, data);
+        }
+        self.areas.push(map_area);
+    }
     /// Assume that no conflicts.
     pub fn insert_framed_area(
         &mut self,
@@ -58,13 +65,6 @@ impl MemorySet {
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
         );
-    }
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
-        map_area.map(&mut self.page_table);
-        if let Some(data) = data {
-            map_area.copy_data(&mut self.page_table, data);
-        }
-        self.areas.push(map_area);
     }
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
@@ -243,6 +243,19 @@ impl MapArea {
             map_perm,
         }
     }
+    /// MapArea 的人 map_one 方法根据 self.map_type 将传入参数 PageTable 和 VPN 做映射
+    /// 
+    /// MapType::Framed 时，分配一个物理页帧 frame，拿到 frame 的 PPN，
+    /// 
+    /// 再将 vpn 和 frame 的映射关系存储到 self.data_frames 这个 BTreeMap 里
+    /// 
+    /// MapType::Identical 时直接得到 PPN
+    /// 
+    /// 随后根据 self.map_perm.bits 生成 PTEFlags
+    /// 
+    /// 再调用 page_table 的 map 方法在 pagetable 里根据 vpn 找到对应的页表项 PTE，
+    /// 
+    /// 并在 PTE 里记录了 PPN 和 flags 生成的页表项 PTE 实例
     pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
         match self.map_type {
@@ -255,10 +268,18 @@ impl MapArea {
                 self.data_frames.insert(vpn, frame);
             }
         }
+        // 随后根据 self.map_perm.bits 生成 PTEFlags
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
+        // 再调用 page_table 的 map 方法在 pagetable 里根据 vpn 找到对应的页表项 PTE，
+        // 并在 PTE 里记录了 PPN 和 flags 生成的页表项 PTE 实例
         page_table.map(vpn, ppn, pte_flags);
     }
     #[allow(unused)]
+    /// MapArea 的 unmap_one 方法 传入 page_table 和 vpn
+    /// 
+    /// self.map_type 时 MapType::Framed 类型时，直接从 self.data_frames 中移除 vpn 对应键值对
+    /// 
+    /// 并且调用 PageTable 方法 unmap 根据传入的 VPN 找到对应 PTE，并将 PTE 清空
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         #[allow(clippy::single_match)]
         match self.map_type {
@@ -267,14 +288,24 @@ impl MapArea {
             }
             _ => {}
         }
+        // PageTable 方法 unmap 根据传入的 VPN 找到对应 PTE，并将 PTE 清空
         page_table.unmap(vpn);
     }
+    
+    /// MapArea 的 map 方法，将 self.vpn_range 里所有的 VPN 和传入的参数 page_table 做映射，
+    /// 
+    /// 调用的 map_one 方法，直到 vpn_range 里所有 VPN 和其对应的 frame 
+    /// 
+    /// 都以键值对方法存储到 self.data_frames 里， 并且 pagetable 中相应 PTE 中都记录了 PPN 和 PTEflags
     pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
     }
     #[allow(unused)]
+    /// MapArea 的 unmap_one 方法 循环调用 unmap_one 方法，
+    /// 
+    /// 直到所有 vpn_range 里的 vpn 都从 self.data_frames 里移除
     pub fn unmap(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.unmap_one(page_table, vpn);
@@ -282,23 +313,40 @@ impl MapArea {
     }
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before
+    /// 
+    /// copy_data 方法将切片 data 中的数据拷贝到当前逻辑段实际被内核放置在的各物理页帧上
+    /// 
+    /// data 是要拷贝进内存的数据，程序段等？？
     pub fn copy_data(&mut self, page_table: &mut PageTable, data: &[u8]) {
         assert_eq!(self.map_type, MapType::Framed);
         let mut start: usize = 0;
         let mut current_vpn = self.vpn_range.get_start();
         let len = data.len();
+        // 拿到 current_vpn 和 数据长度后，进入循环
         loop {
+            // Compares and returns the minimum of two values.
+            // start + PAGE_SIZE， 每次 PAGE_SIZE 长度
             let src = &data[start..len.min(start + PAGE_SIZE)];
+            // PT 的 translate 方法把 current_vpn 转换成 PTE
+            // 从 PTE 里获取 PPN
+            // get_bytes_array ，清零，再切片只要 src 长度的切片
+            // 通过 get_bytes_array 方法获取该物理页帧的字节数组型可变引用，最后再获取它的切片用于数据拷贝。
             let dst = &mut page_table
                 .translate(current_vpn)
                 .unwrap()
                 .ppn()
                 .get_bytes_array()[..src.len()];
+            // Copies all elements from src into self, using a memcpy.
+            // The length of src must be the same as self.
+            // If T does not implement Copy, use [clone_from_slice].
             dst.copy_from_slice(src);
+            // 更新 start 使循环下次 继续从上次拷贝结束的位置进行拷贝
             start += PAGE_SIZE;
+            // 拷贝完了退出循环
             if start >= len {
                 break;
             }
+            // current 加一，下次拷贝到新的物理页帧
             current_vpn.step();
         }
     }

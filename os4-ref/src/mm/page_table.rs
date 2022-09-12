@@ -27,6 +27,9 @@ pub struct PageTableEntry {
 }
 
 impl PageTableEntry {
+    /// PTE 的 new 关联函数，根据传入的 PPN 和 flags ，ppn 左移 10 位再跟 flags 进行或运算，就是拼接起来了
+    /// 
+    /// 生成一个 PTE 实例
     pub fn new(ppn: PhysPageNum, flags: PTEFlags) -> Self {
         PageTableEntry {
             bits: ppn.0 << 10 | flags.bits as usize,
@@ -35,12 +38,22 @@ impl PageTableEntry {
     pub fn empty() -> Self {
         PageTableEntry { bits: 0 }
     }
+
+    /// PTE 的 ppn 方法 将其内存储的 bits：usize 右移 10 位去掉标志位等，
+    /// 
+    /// 再和 44 位 1 进行与运算（只取 44 位），
+    /// 
+    /// 得到的数字 再转换成 PPN　并返回　PPN 
     pub fn ppn(&self) -> PhysPageNum {
         (self.bits >> 10 & ((1usize << 44) - 1)).into()
     }
+    /// 将 存储的 usize 类型的 bits 转换成 PTEFlags
     pub fn flags(&self) -> PTEFlags {
         PTEFlags::from_bits(self.bits as u8).unwrap()
     }
+    /// PTE 的 is_valid 方法将 usize 类型的 bits 转换得来的 PTEFlags 跟 PTEFlags::V 进行与操作
+    /// 
+    /// 得到的不是 0 就返回 true
     pub fn is_valid(&self) -> bool {
         (self.flags() & PTEFlags::V) != PTEFlags::empty()
     }
@@ -58,6 +71,7 @@ impl PageTableEntry {
 /// page table structure
 pub struct PageTable {
     root_ppn: PhysPageNum,
+    // Page table 本身占用的 Frame
     frames: Vec<FrameTracker>,
 }
 
@@ -77,11 +91,14 @@ impl PageTable {
             frames: Vec::new(),
         }
     }
+    /// 查询 PTE，如果中间节点不存在就创建。根据 indexs 循环三次，最后返回 第三级 PTE
     fn find_pte_create(&mut self, vpn: VirtPageNum) -> Option<&mut PageTableEntry> {
         let mut idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
         let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter_mut().enumerate() {
+            // idx 是 usize，get_pte_array 返回的是 512 个 PTE 元素的，slice，引用， 
+            // 利用 idx 对 slice 切片引用, 得到一个页表项 PTE
             let pte = &mut ppn.get_pte_array()[*idx];
             if i == 2 {
                 result = Some(pte);
@@ -96,6 +113,7 @@ impl PageTable {
         }
         result
     }
+    /// 和 find_pte_create类似，只是找不到的话 不创建
     fn find_pte(&self, vpn: VirtPageNum) -> Option<&PageTableEntry> {
         let idxs = vpn.indexes();
         let mut ppn = self.root_ppn;
@@ -114,17 +132,20 @@ impl PageTable {
         result
     }
     #[allow(unused)]
+    /// PageTable 方法 map 根据传入的 VPN 找到 PTE，再给 PTE 赋值，用传入的 PPN 和 flags 生成页表项 PTE 的值
     pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
     }
     #[allow(unused)]
+    /// PageTable 方法 unmap 根据传入的 VPN 找到对应 PTE，并将 PTE 清空
     pub fn unmap(&mut self, vpn: VirtPageNum) {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(pte.is_valid(), "vpn {:?} is invalid before unmapping", vpn);
         *pte = PageTableEntry::empty();
     }
+    /// PageTable 方法 translate 将 VPN 转换成 PTE
     pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
         self.find_pte(vpn).copied()
     }

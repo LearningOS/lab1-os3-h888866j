@@ -1,5 +1,7 @@
 //! Implementation of physical and virtual address and page number.
-
+//! 
+//! 地址空间用到的一些数据结构定义
+//! 
 use super::PageTableEntry;
 use crate::config::{PAGE_SIZE, PAGE_SIZE_BITS};
 use core::fmt::{self, Debug, Formatter};
@@ -87,6 +89,33 @@ impl From<VirtPageNum> for usize {
         v.0
     }
 }
+impl From<PhysAddr> for PhysPageNum {
+    fn from(v: PhysAddr) -> Self {
+        assert_eq!(v.page_offset(), 0);
+        v.floor()
+    }
+}
+/// PhysPageNum 和 PhysAddr 转换
+/// 
+/// let pa = PhysAddr::from(ppn:PhysPageNum)
+/// 
+/// or let pa:PhysAddr = ppn:PhysPageNum.into()
+impl From<PhysPageNum> for PhysAddr {
+    fn from(v: PhysPageNum) -> Self {
+        Self(v.0 << PAGE_SIZE_BITS)
+    }
+}
+impl From<VirtAddr> for VirtPageNum {
+    fn from(v: VirtAddr) -> Self {
+        assert_eq!(v.page_offset(), 0);
+        v.floor()
+    }
+}
+impl From<VirtPageNum> for VirtAddr {
+    fn from(v: VirtPageNum) -> Self {
+        Self(v.0 << PAGE_SIZE_BITS)
+    }
+}
 
 impl VirtAddr {
     pub fn floor(&self) -> VirtPageNum {
@@ -100,17 +129,6 @@ impl VirtAddr {
     }
     pub fn aligned(&self) -> bool {
         self.page_offset() == 0
-    }
-}
-impl From<VirtAddr> for VirtPageNum {
-    fn from(v: VirtAddr) -> Self {
-        assert_eq!(v.page_offset(), 0);
-        v.floor()
-    }
-}
-impl From<VirtPageNum> for VirtAddr {
-    fn from(v: VirtPageNum) -> Self {
-        Self(v.0 << PAGE_SIZE_BITS)
     }
 }
 impl PhysAddr {
@@ -127,19 +145,13 @@ impl PhysAddr {
         self.page_offset() == 0
     }
 }
-impl From<PhysAddr> for PhysPageNum {
-    fn from(v: PhysAddr) -> Self {
-        assert_eq!(v.page_offset(), 0);
-        v.floor()
-    }
-}
-impl From<PhysPageNum> for PhysAddr {
-    fn from(v: PhysPageNum) -> Self {
-        Self(v.0 << PAGE_SIZE_BITS)
-    }
-}
 
 impl VirtPageNum {
+    /// 每次跟 511 进行 **与** 操作， 然后右移 9 位，再与，再右移再与
+    /// 
+    /// 就得到 三个 9 位比特 组成的 array ，也就是 vpn 的第 0-8，9-17，18-26 位组成的三个 usize 类型元素 
+    /// 
+    /// 对应到页表的三个级别中 使用 
     pub fn indexes(&self) -> [usize; 3] {
         let mut vpn = self.0;
         let mut idx = [0usize; 3];
@@ -152,8 +164,10 @@ impl VirtPageNum {
 }
 
 impl PhysPageNum {
+    /// 返回 这个 PPN 对应的 Physical Address frame 上的 PTE 的 slice
     pub fn get_pte_array(&self) -> &'static mut [PageTableEntry] {
         let pa: PhysAddr = (*self).into();
+        // 每个页表项 占 8 字节，8*512 = 4096
         unsafe { core::slice::from_raw_parts_mut(pa.0 as *mut PageTableEntry, 512) }
     }
     pub fn get_bytes_array(&self) -> &'static mut [u8] {
@@ -184,6 +198,7 @@ where
     l: T,
     r: T,
 }
+
 impl<T> SimpleRange<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
@@ -199,6 +214,7 @@ where
         self.r
     }
 }
+
 impl<T> IntoIterator for SimpleRange<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
@@ -209,6 +225,7 @@ where
         SimpleRangeIterator::new(self.l, self.r)
     }
 }
+
 /// iterator for the simple range structure
 pub struct SimpleRangeIterator<T>
 where
@@ -217,6 +234,7 @@ where
     current: T,
     end: T,
 }
+
 impl<T> SimpleRangeIterator<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
@@ -225,6 +243,7 @@ where
         Self { current: l, end: r }
     }
 }
+
 impl<T> Iterator for SimpleRangeIterator<T>
 where
     T: StepByOne + Copy + PartialEq + PartialOrd + Debug,
